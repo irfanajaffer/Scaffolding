@@ -274,6 +274,22 @@
       "Replacements": [
         {
           "ReplaceSnippet": [
+            "<HeadOutlet @rendermode=\"InteractiveServer\" />"
+          ],
+          "MultiLineBlock": [
+            "<HeadOutlet @rendermode=\"PageRenderMode\" />"
+          ]
+        },
+        {
+          "ReplaceSnippet": [
+            "<Routes @rendermode=\"InteractiveServer\" />"
+          ],
+          "MultiLineBlock": [
+            "<Routes @rendermode=\"PageRenderMode\" />"
+          ]
+        },
+        {
+          "ReplaceSnippet": [
             "<HeadOutlet />"
           ],
           "MultiLineBlock": [
