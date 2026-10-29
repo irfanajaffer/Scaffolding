@@ -408,6 +408,90 @@ namespace Microsoft.VisualStudio.Web.CodeGenerators.Mvc.Blazor
                     }
                 }
             }
+
+            if (clientProject != null)
+            {
+                ConfigureClientAuthentication(project, clientProject);
+            }
+        }
+
+        private static bool IsClientUiFile(string fileName) =>
+            fileName.Equals("Routes.razor", StringComparison.OrdinalIgnoreCase) ||
+            fileName.StartsWith("NavMenu.razor", StringComparison.OrdinalIgnoreCase);
+
+        private static Microsoft.CodeAnalysis.Project FindClientProject(Microsoft.CodeAnalysis.Project serverProject)
+        {
+            if (serverProject is null)
+            {
+                return null;
+            }
+
+            return serverProject.ProjectReferences
+                .Select(r => serverProject.Solution.GetProject(r.ProjectId))
+                .FirstOrDefault(p => p?.FilePath != null && File.Exists(p.FilePath) &&
+                    File.ReadAllText(p.FilePath).Contains("Microsoft.NET.Sdk.BlazorWebAssembly", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Server serializes authentication state; the WebAssembly client deserializes it.
+        private void ConfigureClientAuthentication(Microsoft.CodeAnalysis.Project serverProject, Microsoft.CodeAnalysis.Project clientProject)
+        {
+            var serverProgram = Path.Combine(Path.GetDirectoryName(serverProject.FilePath), "Program.cs");
+            if (FileSystem.FileExists(serverProgram))
+            {
+                var text = FileSystem.ReadAllText(serverProgram);
+                const string marker = ".AddInteractiveWebAssemblyComponents()";
+                if (text.Contains(marker) && !text.Contains("AddAuthenticationStateSerialization"))
+                {
+                    FileSystem.WriteAllText(serverProgram, text.Replace(marker, marker + ".AddAuthenticationStateSerialization()"));
+                    Logger.LogMessage($"Modified {serverProgram}.\n");
+                }
+            }
+
+            var clientDir = Path.GetDirectoryName(clientProject.FilePath);
+            var clientProgram = Path.Combine(clientDir, "Program.cs");
+            if (FileSystem.FileExists(clientProgram))
+            {
+                var text = FileSystem.ReadAllText(clientProgram);
+                const string buildCall = "await builder.Build().RunAsync()";
+                if (!text.Contains("AddAuthenticationStateDeserialization") && text.Contains(buildCall))
+                {
+                    var services = "builder.Services.AddAuthorizationCore();" + Environment.NewLine +
+                        "builder.Services.AddCascadingAuthenticationState();" + Environment.NewLine +
+                        "builder.Services.AddAuthenticationStateDeserialization();" + Environment.NewLine + Environment.NewLine;
+                    text = "using Microsoft.AspNetCore.Components.Authorization;" + Environment.NewLine +
+                        text.Replace(buildCall, services + buildCall);
+                    FileSystem.WriteAllText(clientProgram, text);
+                    Logger.LogMessage($"Modified {clientProgram}.\n");
+                }
+            }
+
+            var clientImports = Path.Combine(clientDir, "_Imports.razor");
+            const string authUsing = "@using Microsoft.AspNetCore.Components.Authorization";
+            if (FileSystem.FileExists(clientImports))
+            {
+                var text = FileSystem.ReadAllText(clientImports);
+                if (!text.Contains(authUsing))
+                {
+                    FileSystem.WriteAllText(clientImports, authUsing + Environment.NewLine + text);
+                    Logger.LogMessage($"Modified {clientImports}.\n");
+                }
+            }
+
+            var csproj = FileSystem.ReadAllText(clientProject.FilePath);
+            if (!csproj.Contains("Microsoft.AspNetCore.Components.Authorization"))
+            {
+                var tfm = System.Text.RegularExpressions.Regex.Match(csproj, @"<TargetFramework>net(\d+)\.\d+</TargetFramework>");
+                var major = tfm.Success ? tfm.Groups[1].Value : "10";
+                var idx = csproj.LastIndexOf("</Project>", StringComparison.Ordinal);
+                if (idx >= 0)
+                {
+                    var item = "  <ItemGroup>" + Environment.NewLine +
+                        $"    <PackageReference Include=\"Microsoft.AspNetCore.Components.Authorization\" Version=\"{major}.0.*\" />" + Environment.NewLine +
+                        "  </ItemGroup>" + Environment.NewLine;
+                    FileSystem.WriteAllText(clientProject.FilePath, csproj.Insert(idx, item));
+                    Logger.LogMessage($"Modified {clientProject.FilePath}.\n");
+                }
+            }
         }
 
         internal async Task ModifyProgramCsAsync(CodeFile programCsFile, BlazorIdentityModel blazorIdentityModel)
