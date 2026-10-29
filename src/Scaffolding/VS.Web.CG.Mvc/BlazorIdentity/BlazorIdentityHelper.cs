@@ -22,11 +22,71 @@ namespace Microsoft.VisualStudio.Web.CodeGenerators.Mvc.BlazorIdentity
 
         private static readonly HashSet<string> _staticFileExtensions = [".js"];
 
+        internal static string GetRenderMode(string appContent)
+            => new[] { "InteractiveAuto", "InteractiveServer", "InteractiveWebAssembly" }
+                .FirstOrDefault(mode => appContent.Contains($"@rendermode=\"{mode}\"", StringComparison.Ordinal));
+
+        internal static bool UsesWebAssembly(string renderMode)
+            => renderMode == "InteractiveAuto" || renderMode == "InteractiveWebAssembly";
+
+        /// <summary>
+        /// Adds the services a WebAssembly client project needs to consume the authentication state
+        /// serialized by the server (AddAuthenticationStateSerialization). Idempotent.
+        /// </summary>
+        internal static string AddClientAuthenticationServices(string programText)
+        {
+            if (programText.Contains("AddAuthenticationStateDeserialization", StringComparison.Ordinal))
+            {
+                return programText;
+            }
+
+            var match = System.Text.RegularExpressions.Regex.Match(programText, @"^[ \t]*await\s+builder\.Build\(\)\.RunAsync\(\)", System.Text.RegularExpressions.RegexOptions.Multiline);
+            if (!match.Success)
+            {
+                return programText;
+            }
+
+            var newline = programText.Contains("\r\n") ? "\r\n" : "\n";
+            var insert = string.Join(newline, new[]
+            {
+                "builder.Services.AddAuthorizationCore();",
+                "builder.Services.AddCascadingAuthenticationState();",
+                "builder.Services.AddAuthenticationStateDeserialization();",
+                string.Empty
+            });
+            return programText.Insert(match.Index, insert + newline);
+        }
+
+        /// <summary>
+        /// Adds .AddAuthenticationStateSerialization() to the server's interactive WebAssembly registration. Idempotent.
+        /// </summary>
+        internal static string AddServerAuthenticationStateSerialization(string programText)
+        {
+            const string call = ".AddInteractiveWebAssemblyComponents()";
+            if (programText.Contains("AddAuthenticationStateSerialization", StringComparison.Ordinal))
+            {
+                return programText;
+            }
+
+            var index = programText.IndexOf(call, StringComparison.Ordinal);
+            return index < 0 ? programText : programText.Insert(index + call.Length, ".AddAuthenticationStateSerialization()");
+        }
+
+        internal const string ClientRedirectToLoginSource =
+@"@inject NavigationManager NavigationManager
+
+@code {
+    protected override void OnInitialized()
+    {
+        NavigationManager.NavigateTo($""Account/Login?returnUrl={Uri.EscapeDataString(NavigationManager.Uri)}"", forceLoad: true);
+    }
+}
+";
+
         internal static void ConfigureAppRenderMode(CodeFile appChanges, string appContent)
         {
             const string placeholder = "$(BlazorRenderMode)";
-            var renderMode = new[] { "InteractiveAuto", "InteractiveServer", "InteractiveWebAssembly" }
-                .FirstOrDefault(mode => appContent.Contains($"@rendermode=\"{mode}\"", StringComparison.Ordinal));
+            var renderMode = GetRenderMode(appContent);
 
             appChanges.Replacements = appChanges.Replacements
                 .Where(change => renderMode != null ||

@@ -386,27 +386,128 @@ namespace Microsoft.VisualStudio.Web.CodeGenerators.Mvc.Blazor
             var otherFiles = minimalApiChangesConfig.Files.Where(x => !x.FileName.EndsWith(".cs", StringComparison.OrdinalIgnoreCase));
             var projectPath = Path.GetDirectoryName(ProjectContext.ProjectFullPath);
             var project = Workspace.CurrentSolution.Projects.FirstOrDefault(p => p.AssemblyName.Equals(ProjectContext.AssemblyName, StringComparison.OrdinalIgnoreCase));
+            var clientProject = FindClientProject();
+            var clientFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Routes.razor", "NavMenu.razor", "NavMenu.razor.css" };
+            string renderMode = null;
             foreach (var file in otherFiles)
             {
                 var fileDoc = project.GetDocumentFromName(file.FileName, FileSystem);
+                var isClientDoc = false;
+                // In WASM/Auto Global apps routing and navigation live in the referenced client project.
+                if (fileDoc is null && clientProject != null && clientFiles.Contains(file.FileName))
+                {
+                    fileDoc = clientProject.GetDocumentFromName(file.FileName, FileSystem);
+                    isClientDoc = fileDoc != null;
+                }
+
                 if (file.FileName.Equals("Components\\App.razor", StringComparison.OrdinalIgnoreCase) && fileDoc != null)
                 {
-                    BlazorIdentityHelper.ConfigureAppRenderMode(file, FileSystem.ReadAllText(fileDoc.Name));
+                    var appText = FileSystem.ReadAllText(fileDoc.Name);
+                    renderMode = BlazorIdentityHelper.GetRenderMode(appText);
+                    BlazorIdentityHelper.ConfigureAppRenderMode(file, appText);
                 }
+
                 await DocumentBuilder.ApplyTextReplacements(file, fileDoc, new CodeChangeOptions(), FileSystem);
                 if (file.FileName.Equals("Routes.razor", StringComparison.OrdinalIgnoreCase) &&
                     fileDoc != null &&
                     FileSystem.FileExists(fileDoc.Name))
                 {
-                    var usingStatement = $"@using {blazorIdentityModel.BlazorIdentityNamespace}.Shared";
-                    var fileText = FileSystem.ReadAllText(fileDoc.Name);
-                    if (!fileText.Contains(usingStatement, StringComparison.OrdinalIgnoreCase))
+                    if (isClientDoc)
                     {
-                        fileText = usingStatement + Environment.NewLine + fileText;
-                        FileSystem.WriteAllText(fileDoc.Name, fileText.ToString());
-                        Logger.LogMessage($"Modified {fileDoc.Name}.\n");
+                        // Server-only Account components can't be referenced from the client; use a client-side redirect.
+                        var redirectPath = Path.Combine(Path.GetDirectoryName(fileDoc.Name), "RedirectToLogin.razor");
+                        if (!FileSystem.FileExists(redirectPath))
+                        {
+                            FileSystem.WriteAllText(redirectPath, StringUtil.NormalizeLineEndings(BlazorIdentityHelper.ClientRedirectToLoginSource));
+                            Logger.LogMessage($"Added Blazor identity file : {redirectPath}");
+                        }
+                    }
+                    else
+                    {
+                        var usingStatement = $"@using {blazorIdentityModel.BlazorIdentityNamespace}.Shared";
+                        var fileText = FileSystem.ReadAllText(fileDoc.Name);
+                        if (!fileText.Contains(usingStatement, StringComparison.OrdinalIgnoreCase))
+                        {
+                            fileText = usingStatement + Environment.NewLine + fileText;
+                            FileSystem.WriteAllText(fileDoc.Name, fileText.ToString());
+                            Logger.LogMessage($"Modified {fileDoc.Name}.\n");
+                        }
                     }
                 }
+            }
+
+            if (clientProject != null)
+            {
+                ModifyClientProject(clientProject, renderMode);
+            }
+
+            if (BlazorIdentityHelper.UsesWebAssembly(renderMode))
+            {
+                ModifyFileText(Path.Combine(AppInfo.ApplicationBasePath, "Program.cs"), BlazorIdentityHelper.AddServerAuthenticationStateSerialization);
+            }
+        }
+
+        private void ModifyFileText(string path, Func<string, string> transform)
+        {
+            if (!FileSystem.FileExists(path))
+            {
+                return;
+            }
+
+            var original = FileSystem.ReadAllText(path);
+            var updated = transform(original);
+            if (!string.Equals(original, updated, StringComparison.Ordinal))
+            {
+                FileSystem.WriteAllText(path, updated);
+                Logger.LogMessage($"Modified {path}.\n");
+            }
+        }
+
+        // Finds a referenced project (e.g. BlazorApp1.Client) that hosts the WebAssembly routing/navigation components.
+        private Microsoft.CodeAnalysis.Project FindClientProject()
+        {
+            var serverCsproj = ProjectContext.ProjectFullPath;
+            if (string.IsNullOrEmpty(serverCsproj) || !FileSystem.FileExists(serverCsproj))
+            {
+                return null;
+            }
+
+            var serverDir = Path.GetDirectoryName(serverCsproj);
+            var references = System.Xml.Linq.XDocument.Parse(FileSystem.ReadAllText(serverCsproj))
+                .Descendants("ProjectReference")
+                .Select(e => (string)e.Attribute("Include"))
+                .Where(i => !string.IsNullOrEmpty(i))
+                .Select(i => Path.GetFullPath(Path.Combine(serverDir, i.Replace('\\', Path.DirectorySeparatorChar))));
+            foreach (var referencePath in references)
+            {
+                var referenceDir = Path.GetDirectoryName(referencePath);
+                if (!Directory.Exists(referenceDir) ||
+                    !Directory.EnumerateFiles(referenceDir, "Routes.razor", SearchOption.AllDirectories).Any())
+                {
+                    continue;
+                }
+
+                var roslynProject = Workspace.CurrentSolution.Projects
+                    .FirstOrDefault(p => string.Equals(p.FilePath, referencePath, StringComparison.OrdinalIgnoreCase));
+                if (roslynProject != null)
+                {
+                    return roslynProject;
+                }
+            }
+
+            return null;
+        }
+
+        private void ModifyClientProject(Microsoft.CodeAnalysis.Project clientProject, string renderMode)
+        {
+            var clientDir = Path.GetDirectoryName(clientProject.FilePath);
+            const string authUsing = "@using Microsoft.AspNetCore.Components.Authorization";
+            ModifyFileText(Path.Combine(clientDir, "_Imports.razor"),
+                imports => imports.Contains(authUsing, StringComparison.Ordinal) ? imports : authUsing + Environment.NewLine + imports);
+
+            if (BlazorIdentityHelper.UsesWebAssembly(renderMode))
+            {
+                ModifyFileText(Path.Combine(clientDir, "Program.cs"), BlazorIdentityHelper.AddClientAuthenticationServices);
             }
         }
 

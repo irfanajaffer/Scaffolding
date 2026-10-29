@@ -82,6 +82,37 @@ namespace Microsoft.VisualStudio.Web.CodeGenerators.Mvc
             Assert.Contains("PasskeySubmit.razor.js", script.Block);
         }
 
+        [Fact]
+        public void AddClientAuthenticationServices_AddsStateDeserializationOnce()
+        {
+            const string program = "var builder = WebAssemblyHostBuilder.CreateDefault(args);\n\nawait builder.Build().RunAsync();\n";
+            var updated = BlazorIdentityHelper.AddClientAuthenticationServices(program);
+
+            Assert.Contains("builder.Services.AddAuthorizationCore();", updated);
+            Assert.Contains("builder.Services.AddCascadingAuthenticationState();", updated);
+            Assert.Contains("builder.Services.AddAuthenticationStateDeserialization();", updated);
+            Assert.True(updated.IndexOf("AddAuthenticationStateDeserialization") < updated.IndexOf("RunAsync"));
+            Assert.Equal(updated, BlazorIdentityHelper.AddClientAuthenticationServices(updated));
+        }
+
+        [Fact]
+        public void AddServerAuthenticationStateSerialization_ChainsOnWebAssemblyRegistrationOnce()
+        {
+            const string program = "builder.Services.AddRazorComponents()\n    .AddInteractiveServerComponents()\n    .AddInteractiveWebAssemblyComponents();";
+            var updated = BlazorIdentityHelper.AddServerAuthenticationStateSerialization(program);
+
+            Assert.Contains(".AddInteractiveWebAssemblyComponents().AddAuthenticationStateSerialization();", updated);
+            Assert.Equal(updated, BlazorIdentityHelper.AddServerAuthenticationStateSerialization(updated));
+        }
+
+        [Theory]
+        [InlineData("InteractiveAuto", true)]
+        [InlineData("InteractiveWebAssembly", true)]
+        [InlineData("InteractiveServer", false)]
+        [InlineData(null, false)]
+        public void UsesWebAssembly_MatchesRenderMode(string mode, bool expected)
+            => Assert.Equal(expected, BlazorIdentityHelper.UsesWebAssembly(mode));
+
         private static CodeFile ReadAppChanges()
         {
             using var config = ReadHostChanges();
