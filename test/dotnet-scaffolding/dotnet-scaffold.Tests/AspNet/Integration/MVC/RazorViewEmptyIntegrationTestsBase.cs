@@ -301,6 +301,82 @@ public abstract class RazorViewEmptyIntegrationTestsBase : IDisposable
         _mockFileSystem.Verify(fs => fs.CreateDirectoryIfNotExists(pagesDir), Times.Never);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_OutputFolder_UsesRelativePathFromName_ForView()
+    {
+        string nestedViewsDir = Path.Combine(_testProjectDir, "Views", "Repro");
+
+        _mockFileSystem.Setup(fs => fs.FileExists(_testProjectPath)).Returns(true);
+        _mockFileSystem.Setup(fs => fs.DirectoryExists(nestedViewsDir)).Returns(false);
+
+        var step = new DotnetNewScaffolderStep(
+            NullLogger<DotnetNewScaffolderStep>.Instance,
+            _mockFileSystem.Object,
+            _testTelemetryService)
+        {
+            ProjectPath = _testProjectPath,
+            FileName = Path.Combine("Repro", "index"),
+            CommandName = Constants.DotnetCommands.ViewCommandName
+        };
+
+        bool result = await step.ExecuteAsync(_context, CancellationToken.None);
+
+        Assert.False(result);
+        Assert.Equal(Path.Combine("Repro", "Index"), step.FileName);
+        _mockFileSystem.Verify(fs => fs.CreateDirectoryIfNotExists(nestedViewsDir), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_OutputFolder_UsesRelativeFolderOption_ForView()
+    {
+        string nestedViewsDir = Path.Combine(_testProjectDir, "Views", "Repro");
+
+        _mockFileSystem.Setup(fs => fs.FileExists(_testProjectPath)).Returns(true);
+        _mockFileSystem.Setup(fs => fs.DirectoryExists(nestedViewsDir)).Returns(false);
+
+        var step = new DotnetNewScaffolderStep(
+            NullLogger<DotnetNewScaffolderStep>.Instance,
+            _mockFileSystem.Object,
+            _testTelemetryService)
+        {
+            ProjectPath = _testProjectPath,
+            FileName = "Index",
+            RelativeOutputPath = "Repro",
+            CommandName = Constants.DotnetCommands.ViewCommandName
+        };
+
+        bool result = await step.ExecuteAsync(_context, CancellationToken.None);
+
+        Assert.False(result);
+        Assert.Equal(Path.Combine("Repro", "Index"), step.FileName);
+        _mockFileSystem.Verify(fs => fs.CreateDirectoryIfNotExists(nestedViewsDir), Times.Once);
+    }
+
+    [Theory]
+    [InlineData("../Index", null)]
+    [InlineData("..\\Index", null)]
+    [InlineData("Index", "../Repro")]
+    [InlineData("Index", "..\\Repro")]
+    public async Task ExecuteAsync_ReturnsFalse_WhenNameOrRelativeFolderTraversesDirectories(string fileName, string? relativeOutputPath)
+    {
+        _mockFileSystem.Setup(fs => fs.FileExists(_testProjectPath)).Returns(true);
+
+        var step = new DotnetNewScaffolderStep(
+            NullLogger<DotnetNewScaffolderStep>.Instance,
+            _mockFileSystem.Object,
+            _testTelemetryService)
+        {
+            ProjectPath = _testProjectPath,
+            FileName = fileName,
+            RelativeOutputPath = relativeOutputPath,
+            CommandName = Constants.DotnetCommands.ViewCommandName
+        };
+
+        bool result = await step.ExecuteAsync(_context, CancellationToken.None);
+
+        Assert.False(result);
+    }
+
     #endregion
 
     #region DotnetNewScaffolderStep  Telemetry
@@ -460,6 +536,53 @@ public abstract class RazorViewEmptyIntegrationTestsBase : IDisposable
         string expectedFile = Path.Combine(_testProjectDir, "Views", $"{step.FileName}.cshtml");
         string content = File.ReadAllText(expectedFile);
         Assert.False(string.IsNullOrWhiteSpace(content), "Generated .cshtml file should not be empty.");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GeneratesViewFile_InNestedControllerFolder_WhenNameIncludesRelativePath()
+    {
+        File.WriteAllText(_testProjectPath, ProjectContent);
+
+        var realFileSystem = new FileSystem();
+        var step = new DotnetNewScaffolderStep(
+            NullLogger<DotnetNewScaffolderStep>.Instance,
+            realFileSystem,
+            _testTelemetryService)
+        {
+            ProjectPath = _testProjectPath,
+            FileName = Path.Combine("Repro", "Index"),
+            CommandName = Constants.DotnetCommands.ViewCommandName
+        };
+
+        bool result = await step.ExecuteAsync(_context, CancellationToken.None);
+
+        Assert.True(result, $"dotnet new view should succeed for a nested output path in a valid {TargetFramework} project.");
+        string expectedFile = Path.Combine(_testProjectDir, "Views", "Repro", "Index.cshtml");
+        Assert.True(File.Exists(expectedFile), $"Expected file '{expectedFile}' was not created.");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GeneratesViewFile_InNestedControllerFolder_WhenRelativeFolderOptionIsSet()
+    {
+        File.WriteAllText(_testProjectPath, ProjectContent);
+
+        var realFileSystem = new FileSystem();
+        var step = new DotnetNewScaffolderStep(
+            NullLogger<DotnetNewScaffolderStep>.Instance,
+            realFileSystem,
+            _testTelemetryService)
+        {
+            ProjectPath = _testProjectPath,
+            FileName = "Index",
+            RelativeOutputPath = "Repro",
+            CommandName = Constants.DotnetCommands.ViewCommandName
+        };
+
+        bool result = await step.ExecuteAsync(_context, CancellationToken.None);
+
+        Assert.True(result, $"dotnet new view should succeed for a relative folder path in a valid {TargetFramework} project.");
+        string expectedFile = Path.Combine(_testProjectDir, "Views", "Repro", "Index.cshtml");
+        Assert.True(File.Exists(expectedFile), $"Expected file '{expectedFile}' was not created.");
     }
 
     [Fact]
