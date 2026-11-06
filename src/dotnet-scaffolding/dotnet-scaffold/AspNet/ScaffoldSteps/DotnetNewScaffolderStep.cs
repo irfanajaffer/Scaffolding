@@ -164,6 +164,8 @@ internal class DotnetNewScaffolderStep : ScaffoldStep
                 ? relativeOutputPath
                 : Path.Combine(relativeOutputPath, nameRelativeOutputPath);
 
+        relativeOutputPath = TrimLeadingOutputFolder(relativeOutputPath, CommandName);
+
         FileName = string.IsNullOrEmpty(relativeOutputPath)
             ? normalizedName
             : Path.Combine(relativeOutputPath, normalizedName);
@@ -217,6 +219,23 @@ internal class DotnetNewScaffolderStep : ScaffoldStep
         }
 
         return Path.Combine(segments);
+    }
+
+    private static string? TrimLeadingOutputFolder(string? relativeOutputPath, string commandName)
+    {
+        if (string.IsNullOrEmpty(relativeOutputPath) ||
+            !OutputFolders.TryGetValue(commandName, out var outputFolder))
+        {
+            return relativeOutputPath;
+        }
+
+        var segments = relativeOutputPath.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0 || !string.Equals(segments[0], outputFolder, StringComparison.OrdinalIgnoreCase))
+        {
+            return relativeOutputPath;
+        }
+
+        return segments.Length == 1 ? null : Path.Combine(segments[1..]);
     }
 
     private readonly static Dictionary<string, string> OutputFolders = new()
